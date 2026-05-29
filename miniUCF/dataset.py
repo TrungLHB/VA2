@@ -1,9 +1,4 @@
-"""Dataset utilities for the miniUCF action-recognition subset.
-
-The dataset can read either extracted RGB frames or the provided optical-flow
-JPEGs. RGB frames are intentionally stored outside the AVI tree so extraction is
-done once and subsequent training runs only load images from disk.
-"""
+"""PyTorch datasets for the miniUCF action-recognition subset."""
 
 from __future__ import annotations
 
@@ -15,22 +10,24 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
-from torchvision.transforms import functional as F
+from torchvision.transforms.functional import to_tensor
 
 
 RGB = "rgb"
 FLOW = "flow"
-TCHW = "TCHW"
-CTHW = "CTHW"
 
-DATA_ROOT = Path("data")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_ROOT = PROJECT_ROOT / "data"
 CLASSES_FILE = DATA_ROOT / "classes.txt"
 TRAIN_SPLIT_FILE = DATA_ROOT / "train.txt"
 VALIDATION_SPLIT_FILE = DATA_ROOT / "validation.txt"
 VIDEO_ROOT = DATA_ROOT / "mini_UCF"
 RGB_FRAMES_ROOT = DATA_ROOT / "mini_UCF_frames"
 FLOW_ROOT = DATA_ROOT / "mini_UCF_flow"
-DEFAULT_IMAGE_TEMPLATE = "img_{:05d}.jpg"
+
+RGB_FRAME_TEMPLATE = "img_{:05d}.jpg"
+FLOW_X_TEMPLATE = "flow_x_{:04d}.jpg"
+FLOW_Y_TEMPLATE = "flow_y_{:04d}.jpg"
 
 
 @dataclass(frozen=True)
@@ -43,35 +40,32 @@ class VideoRecord:
     label: int
 
 
-def read_class_mapping(classes_file: str | Path) -> Tuple[Dict[str, int], Dict[int, str]]:
-    """Read ``classes.txt`` into both name-to-id and id-to-name mappings."""
+def read_class_mapping(classes_file: Path = CLASSES_FILE) -> Tuple[Dict[str, int], Dict[int, str]]:
+    class_to_idx: Dict[str, int] = {}
+    idx_to_class: Dict[int, str] = {}
 
-    name_to_id: Dict[str, int] = {}
-    id_to_name: Dict[int, str] = {}
-    with Path(classes_file).open("r", encoding="utf-8") as handle:
+    with classes_file.open("r", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
             if not line:
                 continue
             class_id, class_name = line.split(maxsplit=1)
-            class_id_int = int(class_id)
-            name_to_id[class_name] = class_id_int
-            id_to_name[class_id_int] = class_name
-    return name_to_id, id_to_name
+            class_id = int(class_id)
+            class_to_idx[class_name] = class_id
+            idx_to_class[class_id] = class_name
+
+    return class_to_idx, idx_to_class
 
 
-def read_split_file(split_file: str | Path, class_to_idx: Dict[str, int]) -> List[VideoRecord]:
-    """Read a miniUCF split file into ``VideoRecord`` objects."""
-
+def read_split_file(split_file: Path, class_to_idx: Dict[str, int]) -> List[VideoRecord]:
     records: List[VideoRecord] = []
-    with Path(split_file).open("r", encoding="utf-8") as handle:
+
+    with split_file.open("r", encoding="utf-8") as handle:
         for line in handle:
             identifier = line.strip()
             if not identifier:
                 continue
             class_name, video_name = identifier.split("/", maxsplit=1)
-            if class_name not in class_to_idx:
-                raise ValueError(f"Unknown class {class_name!r} in split file {split_file}")
             records.append(
                 VideoRecord(
                     identifier=identifier,
@@ -80,26 +74,26 @@ def read_split_file(split_file: str | Path, class_to_idx: Dict[str, int]) -> Lis
                     label=class_to_idx[class_name],
                 )
             )
+
     return records
 
 
+def split_file_for(split: str) -> Path:
+    if split == "train":
+        return TRAIN_SPLIT_FILE
+    if split in {"validation", "val"}:
+        return VALIDATION_SPLIT_FILE
+    raise ValueError("split must be 'train' or 'validation'")
+
+
 def extract_rgb_frames(
-    split_files: Optional[Sequence[str | Path]] = None,
+    split_files: Optional[Sequence[Path]] = None,
     overwrite: bool = False,
 ) -> None:
-    """Extract RGB frames from AVI files using OpenCV.
-
-    Args:
-        split_files: Optional split files limiting extraction to listed videos.
-            If omitted, every ``*.avi`` below ``data/mini_UCF`` is extracted.
-        overwrite: Re-extract videos that already have at least one frame.
-
-    Raises:
-        ImportError: If OpenCV is not installed.
-        RuntimeError: If a video cannot be opened.
-    """
+    """Extract RGB frames from AVI files into ``data/mini_UCF_frames``."""
 
     try:
+        # noinspection PyPackageRequirements
         import cv2
     except ImportError as exc:
         raise ImportError("Install opencv-python to extract RGB frames from AVI files.") from exc
@@ -109,7 +103,7 @@ def extract_rgb_frames(
     else:
         identifiers: List[str] = []
         for split_file in split_files:
-            with Path(split_file).open("r", encoding="utf-8") as handle:
+            with split_file.open("r", encoding="utf-8") as handle:
                 identifiers.extend(line.strip() for line in handle if line.strip())
         video_paths = [VIDEO_ROOT / f"{identifier}.avi" for identifier in sorted(set(identifiers))]
 
@@ -117,8 +111,7 @@ def extract_rgb_frames(
         if not video_path.exists():
             raise FileNotFoundError(f"Missing video file: {video_path}")
 
-        relative_video = video_path.relative_to(VIDEO_ROOT)
-        output_dir = RGB_FRAMES_ROOT / relative_video.with_suffix("")
+        output_dir = RGB_FRAMES_ROOT / video_path.relative_to(VIDEO_ROOT).with_suffix("")
         if output_dir.exists() and not overwrite and any(output_dir.glob("*.jpg")):
             continue
 
@@ -131,111 +124,41 @@ def extract_rgb_frames(
         success, frame_bgr = capture.read()
         while success:
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            output_path = output_dir / DEFAULT_IMAGE_TEMPLATE.format(frame_index)
-            cv2.imwrite(str(output_path), cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+            frame_path = output_dir / RGB_FRAME_TEMPLATE.format(frame_index)
+            cv2.imwrite(str(frame_path), cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
             frame_index += 1
             success, frame_bgr = capture.read()
+
         capture.release()
 
 
-class MiniUCFDataset(Dataset):
-    """PyTorch dataset for RGB-frame or optical-flow miniUCF clips.
-
-    Each item is ``(clip, label)``. By default, ``clip`` has shape
-    ``[T, C, H, W]`` where ``T`` is ``num_segments`` and ``C`` is 3 for RGB or
-    2 for optical flow. Set ``output_format="CTHW"`` for 3D CNNs.
-    """
+class _MiniUCFBase(Dataset):
+    """Shared split parsing and temporal-segment sampling."""
 
     def __init__(
         self,
-        split: str = "train",
-        modality: str = RGB,
-        num_segments: int = 8,
-        transform: Optional[Callable] = None,
-        tensor_transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
-        output_format: str = TCHW,
-        auto_extract_rgb: bool = False,
+        split: str,
+        num_segments: int,
+        transform: Optional[Callable],
     ) -> None:
-        if modality not in {RGB, FLOW}:
-            raise ValueError(f"modality must be {RGB!r} or {FLOW!r}, got {modality!r}")
-        if output_format not in {TCHW, CTHW}:
-            raise ValueError(f"output_format must be {TCHW!r} or {CTHW!r}, got {output_format!r}")
         if num_segments <= 0:
             raise ValueError("num_segments must be positive")
 
         self.split = split
-        self.modality = modality
         self.num_segments = num_segments
         self.transform = transform
-        self.tensor_transform = tensor_transform
-        self.output_format = output_format
         self.random_sampling = split == "train"
-
-        if split == "train":
-            split_path = TRAIN_SPLIT_FILE
-        elif split in {"validation", "val"}:
-            split_path = VALIDATION_SPLIT_FILE
-        else:
-            raise ValueError("split must be 'train' or 'validation'")
-
-        self.class_to_idx, self.idx_to_class = read_class_mapping(CLASSES_FILE)
-        self.records = read_split_file(split_path, self.class_to_idx)
-
-        if self.modality == RGB and auto_extract_rgb:
-            extract_rgb_frames(split_files=[split_path])
+        self.class_to_idx, self.idx_to_class = read_class_mapping()
+        self.records = read_split_file(split_file_for(split), self.class_to_idx)
 
     def __len__(self) -> int:
         return len(self.records)
 
-    def __getitem__(self, index: int) -> Tuple[torch.Tensor, int]:
-        record = self.records[index]
-        frame_count = self._frame_count(record)
-        indices = self._sample_indices(frame_count)
-
-        if self.modality == RGB:
-            frames = [self._load_rgb_frame(record, frame_index) for frame_index in indices]
-            clip = torch.stack([self._image_to_tensor(frame, apply_transform=True) for frame in frames], dim=0)
-        else:
-            flow_frames = [self._load_flow_frame(record, frame_index) for frame_index in indices]
-            clip = torch.stack(flow_frames, dim=0)
-
-        if self.output_format == CTHW:
-            clip = clip.permute(1, 0, 2, 3).contiguous()
-        if self.tensor_transform is not None:
-            clip = self.tensor_transform(clip)
-        return clip, record.label
-
-    def _frame_count(self, record: VideoRecord) -> int:
-        if self.modality == RGB:
-            frame_dir = RGB_FRAMES_ROOT / record.identifier
-            frame_paths = sorted(frame_dir.glob("*.jpg"))
-            if frame_paths:
-                return len(frame_paths)
-            video_path = VIDEO_ROOT / f"{record.identifier}.avi"
-            raise FileNotFoundError(
-                f"No extracted RGB frames found in {frame_dir}. "
-                f"Run extract_rgb_frames() "
-                f"or construct MiniUCFDataset(..., auto_extract_rgb=True). "
-                f"Expected source video: {video_path}"
-            )
-
-        flow_dir = FLOW_ROOT / record.identifier
-        flow_x_count = len(list(flow_dir.glob("flow_x_*.jpg")))
-        flow_y_count = len(list(flow_dir.glob("flow_y_*.jpg")))
-        frame_count = min(flow_x_count, flow_y_count)
-        if frame_count == 0:
-            raise FileNotFoundError(f"No optical flow frames found in {flow_dir}")
-        return frame_count
-
     def _sample_indices(self, frame_count: int) -> List[int]:
-        """Return 1-based frame indices for one clip."""
+        """Return 1-based frame indices, one from each temporal segment."""
 
         if frame_count <= 0:
             raise ValueError("frame_count must be positive")
-        if self.num_segments == 1:
-            if self.random_sampling:
-                return [random.randint(1, frame_count)]
-            return [(frame_count + 1) // 2]
 
         if frame_count < self.num_segments:
             return [
@@ -253,62 +176,125 @@ class MiniUCFDataset(Dataset):
                 indices.append(random.randint(start, end))
             else:
                 indices.append((start + end) // 2)
+
         return indices
 
-    def _load_rgb_frame(self, record: VideoRecord, frame_index: int) -> Image.Image:
+    def _to_tensor(self, image) -> torch.Tensor:
+        if self.transform is not None and isinstance(image, Image.Image):
+            image = self.transform(image)
+        if torch.is_tensor(image):
+            return image.float()
+        return to_tensor(image)
+
+
+class MiniUCFRGBDataset(_MiniUCFBase):
+    """Load one RGB frame from each temporal segment."""
+
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, int]:
+        record = self.records[index]
+        frame_count = self._frame_count(record)
+        frame_indices = self._sample_indices(frame_count)
+
+        frames = [self._load_frame(record, frame_index) for frame_index in frame_indices]
+        clip = torch.stack([self._to_tensor(frame) for frame in frames], dim=0)
+        return clip, record.label
+
+    @staticmethod
+    def _frame_count(record: VideoRecord) -> int:
         frame_dir = RGB_FRAMES_ROOT / record.identifier
-        frame_path = frame_dir / f"img_{frame_index:05d}.jpg"
-        if not frame_path.exists():
-            fallback = frame_dir / f"frame_{frame_index:05d}.jpg"
-            frame_path = fallback if fallback.exists() else frame_path
+        frame_count = len(list(frame_dir.glob("*.jpg")))
+        if frame_count == 0:
+            video_path = VIDEO_ROOT / f"{record.identifier}.avi"
+            raise FileNotFoundError(
+                f"No extracted RGB frames found in {frame_dir}. "
+                f"Run extract_rgb_frames() first. Source video: {video_path}"
+            )
+        return frame_count
+
+    @staticmethod
+    def _load_frame(record: VideoRecord, frame_index: int) -> Image.Image:
+        frame_dir = RGB_FRAMES_ROOT / record.identifier
+        frame_path = frame_dir / RGB_FRAME_TEMPLATE.format(frame_index)
         if not frame_path.exists():
             raise FileNotFoundError(f"Missing RGB frame: {frame_path}")
         return Image.open(frame_path).convert("RGB")
 
-    def _load_flow_frame(self, record: VideoRecord, frame_index: int) -> torch.Tensor:
+
+class MiniUCFFlowDataset(_MiniUCFBase):
+    """Load a stack of consecutive optical-flow pairs per temporal segment."""
+
+    def __init__(
+        self,
+        split: str,
+        num_segments: int,
+        transform: Optional[Callable],
+        flow_stack_size: int,
+    ) -> None:
+        if flow_stack_size <= 0:
+            raise ValueError("flow_stack_size must be positive")
+
+        super().__init__(split=split, num_segments=num_segments, transform=transform)
+        self.flow_stack_size = flow_stack_size
+
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, int]:
+        record = self.records[index]
+        stack_count = self._stack_count(record)
+        start_indices = self._sample_indices(stack_count)
+
+        flow_stacks = [self._load_flow_stack(record, start_index) for start_index in start_indices]
+        clip = torch.stack(flow_stacks, dim=0)
+        return clip, record.label
+
+    def _stack_count(self, record: VideoRecord) -> int:
         flow_dir = FLOW_ROOT / record.identifier
-        x_path = flow_dir / f"flow_x_{frame_index:04d}.jpg"
-        y_path = flow_dir / f"flow_y_{frame_index:04d}.jpg"
+        flow_pair_count = min(
+            len(list(flow_dir.glob("flow_x_*.jpg"))),
+            len(list(flow_dir.glob("flow_y_*.jpg"))),
+        )
+        if flow_pair_count == 0:
+            raise FileNotFoundError(f"No optical flow frames found in {flow_dir}")
+
+        stack_count = flow_pair_count - self.flow_stack_size + 1
+        if stack_count <= 0:
+            raise ValueError(
+                f"Video {record.identifier} has fewer flow frames than "
+                f"flow_stack_size={self.flow_stack_size}"
+            )
+        return stack_count
+
+    def _load_flow_stack(self, record: VideoRecord, start_index: int) -> torch.Tensor:
+        flow_pairs = [
+            self._load_flow_pair(record, frame_index)
+            for frame_index in range(start_index, start_index + self.flow_stack_size)
+        ]
+        return torch.cat(flow_pairs, dim=0)
+
+    def _load_flow_pair(self, record: VideoRecord, frame_index: int) -> torch.Tensor:
+        flow_dir = FLOW_ROOT / record.identifier
+        x_path = flow_dir / FLOW_X_TEMPLATE.format(frame_index)
+        y_path = flow_dir / FLOW_Y_TEMPLATE.format(frame_index)
         if not x_path.exists() or not y_path.exists():
             raise FileNotFoundError(f"Missing optical flow pair: {x_path}, {y_path}")
 
         flow_x = Image.open(x_path).convert("L")
         flow_y = Image.open(y_path).convert("L")
-
-        if self.transform is not None:
-            flow_x = self.transform(flow_x)
-            flow_y = self.transform(flow_y)
-
-        return torch.cat(
-            [
-                self._image_to_tensor(flow_x, apply_transform=False),
-                self._image_to_tensor(flow_y, apply_transform=False),
-            ],
-            dim=0,
-        )
-
-    def _image_to_tensor(self, image, apply_transform: bool) -> torch.Tensor:
-        if apply_transform and self.transform is not None and isinstance(image, Image.Image):
-            image = self.transform(image)
-        if torch.is_tensor(image):
-            return image.float()
-        return F.to_tensor(image)
+        return torch.cat([self._to_tensor(flow_x), self._to_tensor(flow_y)], dim=0)
 
 
 __all__ = [
-    "CTHW",
-    "CLASSES_FILE",
-    "DATA_ROOT",
-    "DEFAULT_IMAGE_TEMPLATE",
     "FLOW",
     "FLOW_ROOT",
+    "FLOW_X_TEMPLATE",
+    "FLOW_Y_TEMPLATE",
+    "PROJECT_ROOT",
     "RGB",
     "RGB_FRAMES_ROOT",
-    "TCHW",
+    "RGB_FRAME_TEMPLATE",
     "TRAIN_SPLIT_FILE",
     "VALIDATION_SPLIT_FILE",
     "VIDEO_ROOT",
-    "MiniUCFDataset",
+    "MiniUCFFlowDataset",
+    "MiniUCFRGBDataset",
     "VideoRecord",
     "extract_rgb_frames",
     "read_class_mapping",
