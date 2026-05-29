@@ -190,6 +190,18 @@ class _MiniUCFBase(Dataset):
 class MiniUCFRGBDataset(_MiniUCFBase):
     """Load one RGB frame from each temporal segment."""
 
+    def __init__(
+        self,
+        split: str,
+        num_segments: int,
+        transform: Optional[Callable],
+        extract_missing: bool = True,
+    ) -> None:
+        super().__init__(split=split, num_segments=num_segments, transform=transform)
+
+        if extract_missing:
+            self._extract_missing_frames()
+
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, int]:
         record = self.records[index]
         frame_count = self._frame_count(record)
@@ -198,6 +210,18 @@ class MiniUCFRGBDataset(_MiniUCFBase):
         frames = [self._load_frame(record, frame_index) for frame_index in frame_indices]
         clip = torch.stack([self._to_tensor(frame) for frame in frames], dim=0)
         return clip, record.label
+
+    def _extract_missing_frames(self) -> None:
+        missing_records = [
+            record
+            for record in self.records
+            if not any((RGB_FRAMES_ROOT / record.identifier).glob("*.jpg"))
+        ]
+        if not missing_records:
+            return
+
+        print(f"Extracting RGB frames for {len(missing_records)} missing {self.split} videos...")
+        extract_rgb_frames(split_files=[split_file_for(self.split)], overwrite=False)
 
     @staticmethod
     def _frame_count(record: VideoRecord) -> int:
