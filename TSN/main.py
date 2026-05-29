@@ -7,6 +7,7 @@ near the top of the file.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Tuple
@@ -24,21 +25,22 @@ from miniUCF import FLOW, RGB, MiniUCFFlowDataset, MiniUCFRGBDataset  # noqa: E4
 from TSN.model import FLOW_STACK_SIZE, NUM_SEGMENTS, flow_tsn, rgb_tsn  # noqa: E402
 
 
-# Change these constants for the current experiment.
-MODALITY = FLOW  # RGB or FLOW
-USE_IMAGENET_INIT = False
+# Change these constants for the current experiment, or override them with
+# environment variables of the same name.
+MODALITY = os.environ.get("MODALITY", FLOW)  # RGB or FLOW
+USE_IMAGENET_INIT = bool(int(os.environ.get("USE_IMAGENET_INIT", "0")))
 
-EPOCHS = 1
-BATCH_SIZE = 2
-NUM_WORKERS = 0
-LEARNING_RATE = 1e-3
-WEIGHT_DECAY = 1e-4
+EPOCHS = int(os.environ.get("EPOCHS", "1"))
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "2"))
+NUM_WORKERS = int(os.environ.get("NUM_WORKERS", "0"))
+LEARNING_RATE = float(os.environ.get("LEARNING_RATE", "1e-3"))
+WEIGHT_DECAY = float(os.environ.get("WEIGHT_DECAY", "1e-4"))
 
 # Debug setting: set to 0 to train on the whole training split.
-MAX_TRAIN_BATCHES = 2
+MAX_TRAIN_BATCHES = int(os.environ.get("MAX_TRAIN_BATCHES", "2"))
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-CHECKPOINT_DIR = PROJECT_ROOT / "TSN" / "checkpoints"
+CHECKPOINT_DIR = Path(os.environ.get("CHECKPOINT_DIR", PROJECT_ROOT / "TSN" / "checkpoints"))
 
 
 def rgb_transforms() -> transforms.Compose:
