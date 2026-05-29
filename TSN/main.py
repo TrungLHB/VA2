@@ -258,6 +258,16 @@ def main() -> None:
                 num_workers=NUM_WORKERS,
                 pin_memory=torch.cuda.is_available(),
             )
+            validation_loader = None
+            if RUN_EVAL:
+                validation_dataset = build_validation_dataset()
+                validation_loader = DataLoader(
+                    validation_dataset,
+                    batch_size=BATCH_SIZE,
+                    shuffle=False,
+                    num_workers=NUM_WORKERS,
+                    pin_memory=torch.cuda.is_available(),
+                )
 
             for epoch in range(1, EPOCHS + 1):
                 train_loss, train_accuracy = train_one_epoch(model, train_loader, criterion, optimizer)
@@ -265,9 +275,20 @@ def main() -> None:
                 if writer is not None:
                     writer.add_scalar("Loss/train", train_loss, epoch)
                     writer.add_scalar("Accuracy/train", train_accuracy, epoch)
+
+                if validation_loader is not None:
+                    validation_loss, validation_accuracy = evaluate(model, validation_loader, criterion)
+                    print(
+                        f"Epoch {epoch:03d}: validation loss {validation_loss:.4f}, "
+                        f"validation acc {validation_accuracy:.3f}"
+                    )
+                    if writer is not None:
+                        writer.add_scalar("Loss/validation", validation_loss, epoch)
+                        writer.add_scalar("Accuracy/validation", validation_accuracy, epoch)
+
                 save_checkpoint(model, optimizer, epoch)
 
-        if RUN_EVAL:
+        if RUN_EVAL and not RUN_TRAIN:
             checkpoint_epoch = load_checkpoint(model)
             validation_dataset = build_validation_dataset()
             validation_loader = DataLoader(
