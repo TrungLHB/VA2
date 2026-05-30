@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,7 @@ VALIDATION_SPLIT_FILE = DATA_ROOT / "validation.txt"
 VIDEO_ROOT = DATA_ROOT / "mini_UCF"
 RGB_FRAMES_ROOT = DATA_ROOT / "mini_UCF_frames"
 FLOW_ROOT = DATA_ROOT / "mini_UCF_flow"
+TSN_SAMPLE_ROOT = DATA_ROOT / "tsn_samples"
 
 RGB_FRAME_TEMPLATE = "img_{:05d}.jpg"
 FLOW_X_TEMPLATE = "flow_x_{:04d}.jpg"
@@ -133,7 +135,7 @@ def extract_rgb_frames(
 
 
 class _MiniUCFBase(Dataset):
-    """Shared split parsing and temporal-segment sampling."""
+    """Shared split parsing and fixed temporal-segment sampling."""
 
     def __init__(
         self,
@@ -155,6 +157,27 @@ class _MiniUCFBase(Dataset):
 
     def __len__(self) -> int:
         return len(self.records)
+
+    def _manifest_path(self, modality: str, extra_name: str = "") -> Path:
+        """Return the path where fixed TSN frame/flow samples are stored."""
+
+        seed_name = f"seed{self.sampling_seed}" if self.random_sampling else "middle"
+        extra = f"_{extra_name}" if extra_name else ""
+        filename = f"{modality}_{self.split}_segments{self.num_segments}_{seed_name}{extra}.json"
+        return TSN_SAMPLE_ROOT / filename
+
+    def _load_manifest(self, path: Path) -> Optional[Dict[str, List[int]]]:
+        if not path.exists():
+            return None
+
+        with path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        return {identifier: [int(index) for index in indices] for identifier, indices in manifest.items()}
+
+    def _save_manifest(self, path: Path, manifest: Dict[str, List[int]]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2, sort_keys=True)
 
     def _sample_indices(self, frame_count: int, rng: Optional[random.Random] = None) -> List[int]:
         """Return 1-based frame indices, one from each temporal segment."""
@@ -185,6 +208,25 @@ class _MiniUCFBase(Dataset):
     def _rng_for_record(self, index: int) -> random.Random:
         return random.Random(self.sampling_seed + index)
 
+    def _fixed_samples_from_manifest(
+        self,
+        modality: str,
+        counts: Dict[str, int],
+        extra_name: str = "",
+    ) -> Dict[str, List[int]]:
+        path = self._manifest_path(modality=modality, extra_name=extra_name)
+        manifest = self._load_manifest(path)
+        if manifest is not None:
+            return manifest
+
+        manifest = {
+            record.identifier: self._sample_indices(counts[record.identifier], self._rng_for_record(index))
+            for index, record in enumerate(self.records)
+        }
+        self._save_manifest(path, manifest)
+        print(f"Saved fixed TSN samples: {path}")
+        return manifest
+
     def _to_tensor(self, image) -> torch.Tensor:
         if self.transform is not None and isinstance(image, Image.Image):
             image = self.transform(image)
@@ -209,14 +251,12 @@ class MiniUCFRGBDataset(_MiniUCFBase):
         if extract_missing:
             self._extract_missing_frames()
 
-        self.sampled_frame_indices = [
-            self._sample_indices(self._frame_count(record), self._rng_for_record(index))
-            for index, record in enumerate(self.records)
-        ]
+        frame_counts = {record.identifier: self._frame_count(record) for record in self.records}
+        self.sampled_frame_indices = self._fixed_samples_from_manifest(RGB, frame_counts)
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, int]:
         record = self.records[index]
-        frame_indices = self.sampled_frame_indices[index]
+        frame_indices = self.sampled_frame_indices[record.identifier]
 
         frames = [self._load_frame(record, frame_index) for frame_index in frame_indices]
         clip = torch.stack([self._to_tensor(frame) for frame in frames], dim=0)
@@ -271,14 +311,13 @@ class MiniUCFFlowDataset(_MiniUCFBase):
 
         super().__init__(split=split, num_segments=num_segments, transform=transform, sampling_seed=sampling_seed)
         self.flow_stack_size = flow_stack_size
-        self.sampled_start_indices = [
-            self._sample_indices(self._stack_count(record), self._rng_for_record(index))
-            for index, record in enumerate(self.records)
-        ]
+        stack_counts = {record.identifier: self._stack_count(record) for record in self.records}
+        extra_name = f"stack{self.flow_stack_size}"
+        self.sampled_start_indices = self._fixed_samples_from_manifest(FLOW, stack_counts, extra_name=extra_name)
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, int]:
         record = self.records[index]
-        start_indices = self.sampled_start_indices[index]
+        start_indices = self.sampled_start_indices[record.identifier]
 
         flow_stacks = [self._load_flow_stack(record, start_index) for start_index in start_indices]
         clip = torch.stack(flow_stacks, dim=0)
@@ -329,6 +368,7 @@ __all__ = [
     "RGB",
     "RGB_FRAMES_ROOT",
     "RGB_FRAME_TEMPLATE",
+    "TSN_SAMPLE_ROOT",
     "TRAIN_SPLIT_FILE",
     "VALIDATION_SPLIT_FILE",
     "VIDEO_ROOT",
