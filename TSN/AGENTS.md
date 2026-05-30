@@ -16,7 +16,7 @@ Deductions:
 
 ## Optical Flow TSN (5 points)
 Implement a TSN network only for optical flow. Try 2 settings:
-- initialization  from ImageNet (how should one initialize the first layer?)-
+- initialization  from ImageNet (how should one initialize the first layer?)
 - random initialization.
 
 Compare the training and validation loss figures of the 2 settings.  (Between the 2 settings, only change the kind of initialization, keep all other hyperparameters the same). Use the following hyperparameters:

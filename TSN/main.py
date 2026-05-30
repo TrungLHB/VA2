@@ -35,12 +35,8 @@ EPOCHS = int(os.environ.get("EPOCHS", "1"))
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "2"))
 
 NUM_WORKERS = 2
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 3e-3
 WEIGHT_DECAY = 1e-4
-
-# Debug setting: set to 0 to train on the whole training split.
-MAX_TRAIN_BATCHES = int(os.environ.get("MAX_TRAIN_BATCHES", "2"))
-MAX_EVAL_BATCHES = int(os.environ.get("MAX_EVAL_BATCHES", "2"))
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CHECKPOINT_DIR = Path(PROJECT_ROOT / "TSN" / "checkpoints")
@@ -128,9 +124,6 @@ def train_one_epoch(
     total_samples = 0
 
     for batch_index, (clips, labels) in enumerate(loader):
-        if MAX_TRAIN_BATCHES and batch_index >= MAX_TRAIN_BATCHES:
-            break
-
         clips = clips.to(DEVICE)
         labels = labels.to(DEVICE)
 
@@ -155,9 +148,6 @@ def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module) -> Tupl
     total_samples = 0
 
     for batch_index, (clips, labels) in enumerate(loader):
-        if MAX_EVAL_BATCHES and batch_index >= MAX_EVAL_BATCHES:
-            break
-
         clips = clips.to(DEVICE)
         labels = labels.to(DEVICE)
 
@@ -200,8 +190,6 @@ def create_tensorboard_writer():
                 f"batch_size: {BATCH_SIZE}",
                 f"learning_rate: {LEARNING_RATE}",
                 f"weight_decay: {WEIGHT_DECAY}",
-                f"max_train_batches: {MAX_TRAIN_BATCHES}",
-                f"max_eval_batches: {MAX_EVAL_BATCHES}",
                 f"checkpoint: {checkpoint_path()}",
             ]
         ),
