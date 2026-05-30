@@ -140,6 +140,7 @@ class _MiniUCFBase(Dataset):
         split: str,
         num_segments: int,
         transform: Optional[Callable],
+        sampling_seed: int = 0,
     ) -> None:
         if num_segments <= 0:
             raise ValueError("num_segments must be positive")
@@ -147,6 +148,7 @@ class _MiniUCFBase(Dataset):
         self.split = split
         self.num_segments = num_segments
         self.transform = transform
+        self.sampling_seed = sampling_seed
         self.random_sampling = split == "train"
         self.class_to_idx, self.idx_to_class = read_class_mapping()
         self.records = read_split_file(split_file_for(split), self.class_to_idx)
@@ -154,7 +156,7 @@ class _MiniUCFBase(Dataset):
     def __len__(self) -> int:
         return len(self.records)
 
-    def _sample_indices(self, frame_count: int) -> List[int]:
+    def _sample_indices(self, frame_count: int, rng: Optional[random.Random] = None) -> List[int]:
         """Return 1-based frame indices, one from each temporal segment."""
 
         if frame_count <= 0:
@@ -173,11 +175,15 @@ class _MiniUCFBase(Dataset):
             end = int(round(segment_size * (segment_index + 1)))
             end = max(start, min(end, frame_count))
             if self.random_sampling:
-                indices.append(random.randint(start, end))
+                sampler = rng if rng is not None else random
+                indices.append(sampler.randint(start, end))
             else:
                 indices.append((start + end) // 2)
 
         return indices
+
+    def _rng_for_record(self, index: int) -> random.Random:
+        return random.Random(self.sampling_seed + index)
 
     def _to_tensor(self, image) -> torch.Tensor:
         if self.transform is not None and isinstance(image, Image.Image):
@@ -196,16 +202,21 @@ class MiniUCFRGBDataset(_MiniUCFBase):
         num_segments: int,
         transform: Optional[Callable],
         extract_missing: bool = True,
+        sampling_seed: int = 0,
     ) -> None:
-        super().__init__(split=split, num_segments=num_segments, transform=transform)
+        super().__init__(split=split, num_segments=num_segments, transform=transform, sampling_seed=sampling_seed)
 
         if extract_missing:
             self._extract_missing_frames()
 
+        self.sampled_frame_indices = [
+            self._sample_indices(self._frame_count(record), self._rng_for_record(index))
+            for index, record in enumerate(self.records)
+        ]
+
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, int]:
         record = self.records[index]
-        frame_count = self._frame_count(record)
-        frame_indices = self._sample_indices(frame_count)
+        frame_indices = self.sampled_frame_indices[index]
 
         frames = [self._load_frame(record, frame_index) for frame_index in frame_indices]
         clip = torch.stack([self._to_tensor(frame) for frame in frames], dim=0)
@@ -253,17 +264,21 @@ class MiniUCFFlowDataset(_MiniUCFBase):
         num_segments: int,
         transform: Optional[Callable],
         flow_stack_size: int,
+        sampling_seed: int = 0,
     ) -> None:
         if flow_stack_size <= 0:
             raise ValueError("flow_stack_size must be positive")
 
-        super().__init__(split=split, num_segments=num_segments, transform=transform)
+        super().__init__(split=split, num_segments=num_segments, transform=transform, sampling_seed=sampling_seed)
         self.flow_stack_size = flow_stack_size
+        self.sampled_start_indices = [
+            self._sample_indices(self._stack_count(record), self._rng_for_record(index))
+            for index, record in enumerate(self.records)
+        ]
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, int]:
         record = self.records[index]
-        stack_count = self._stack_count(record)
-        start_indices = self._sample_indices(stack_count)
+        start_indices = self.sampled_start_indices[index]
 
         flow_stacks = [self._load_flow_stack(record, start_index) for start_index in start_indices]
         clip = torch.stack(flow_stacks, dim=0)

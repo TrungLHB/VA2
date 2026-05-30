@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import os
+import random
 import sys
 from pathlib import Path
 from typing import Tuple
@@ -33,6 +34,7 @@ RUN_TRAIN = bool(int(os.environ.get("RUN_TRAIN", "1")))
 RUN_EVAL = bool(int(os.environ.get("RUN_EVAL", "1")))
 EPOCHS = int(os.environ.get("EPOCHS", "1"))
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "2"))
+SAMPLING_SEED = int(os.environ.get("SAMPLING_SEED", "2024"))
 
 NUM_WORKERS = 2
 LEARNING_RATE = 3e-3
@@ -44,6 +46,9 @@ TENSORBOARD_DIR = Path(PROJECT_ROOT / "TSN" / "runs")
 
 
 def rgb_train_transforms() -> transforms.Compose:
+    # Resize the shorter image side to 256, then crop 224x224 because ResNet-18
+    # ImageNet models are trained on 224x224 inputs. The mean/std values are the
+    # standard ImageNet RGB normalization statistics.
     return transforms.Compose(
         [
             transforms.Resize(256),
@@ -56,6 +61,8 @@ def rgb_train_transforms() -> transforms.Compose:
 
 
 def rgb_eval_transforms() -> transforms.Compose:
+    # Use the same 256 resize and 224x224 crop size as training, but center-crop
+    # so validation/testing is deterministic.
     return transforms.Compose(
         [
             transforms.Resize(256),
@@ -67,6 +74,9 @@ def rgb_eval_transforms() -> transforms.Compose:
 
 
 def flow_transforms() -> transforms.Compose:
+    # Flow JPEGs are loaded as single-channel images. Pixel values become [0, 1],
+    # so mean=0.5 centers them near zero and std=0.226 gives a scale close to
+    # ImageNet preprocessing while applying the same normalization to all flow channels.
     return transforms.Compose(
         [
             transforms.Resize(256),
@@ -83,6 +93,7 @@ def build_dataset(split: str):
             split=split,
             num_segments=NUM_SEGMENTS,
             transform=rgb_train_transforms() if split == "train" else rgb_eval_transforms(),
+            sampling_seed=SAMPLING_SEED,
         )
 
     if MODALITY == FLOW:
@@ -91,6 +102,7 @@ def build_dataset(split: str):
             num_segments=NUM_SEGMENTS,
             transform=flow_transforms(),
             flow_stack_size=FLOW_STACK_SIZE,
+            sampling_seed=SAMPLING_SEED,
         )
 
     raise ValueError(f"Unknown MODALITY: {MODALITY}")
@@ -110,6 +122,33 @@ def build_model() -> nn.Module:
     if MODALITY == FLOW:
         return flow_tsn(pretrained=USE_IMAGENET_INIT)
     raise ValueError(f"Unknown MODALITY: {MODALITY}")
+
+
+def seed_everything(seed: int) -> None:
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def seed_worker(worker_id: int) -> None:
+    worker_seed = SAMPLING_SEED + worker_id
+    random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
+
+
+def make_data_loader(dataset, shuffle: bool) -> DataLoader:
+    generator = torch.Generator()
+    generator.manual_seed(SAMPLING_SEED)
+    return DataLoader(
+        dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=shuffle,
+        num_workers=NUM_WORKERS,
+        pin_memory=torch.cuda.is_available(),
+        worker_init_fn=seed_worker,
+        generator=generator,
+    )
 
 
 def train_one_epoch(
@@ -188,6 +227,7 @@ def create_tensorboard_writer():
                 f"use_imagenet_init: {USE_IMAGENET_INIT}",
                 f"epochs: {EPOCHS}",
                 f"batch_size: {BATCH_SIZE}",
+                f"sampling_seed: {SAMPLING_SEED}",
                 f"learning_rate: {LEARNING_RATE}",
                 f"weight_decay: {WEIGHT_DECAY}",
                 f"checkpoint: {checkpoint_path()}",
@@ -231,6 +271,7 @@ def load_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer | None = 
 
 
 def main() -> None:
+    seed_everything(SAMPLING_SEED)
     model = build_model().to(DEVICE)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9, weight_decay=WEIGHT_DECAY)
@@ -239,23 +280,11 @@ def main() -> None:
     try:
         if RUN_TRAIN:
             train_dataset = build_train_dataset()
-            train_loader = DataLoader(
-                train_dataset,
-                batch_size=BATCH_SIZE,
-                shuffle=True,
-                num_workers=NUM_WORKERS,
-                pin_memory=torch.cuda.is_available(),
-            )
+            train_loader = make_data_loader(train_dataset, shuffle=True)
             validation_loader = None
             if RUN_EVAL:
                 validation_dataset = build_validation_dataset()
-                validation_loader = DataLoader(
-                    validation_dataset,
-                    batch_size=BATCH_SIZE,
-                    shuffle=False,
-                    num_workers=NUM_WORKERS,
-                    pin_memory=torch.cuda.is_available(),
-                )
+                validation_loader = make_data_loader(validation_dataset, shuffle=False)
 
             for epoch in range(1, EPOCHS + 1):
                 train_loss, train_accuracy = train_one_epoch(model, train_loader, criterion, optimizer)
@@ -279,13 +308,7 @@ def main() -> None:
         if RUN_EVAL and not RUN_TRAIN:
             checkpoint_epoch = load_checkpoint(model)
             validation_dataset = build_validation_dataset()
-            validation_loader = DataLoader(
-                validation_dataset,
-                batch_size=BATCH_SIZE,
-                shuffle=False,
-                num_workers=NUM_WORKERS,
-                pin_memory=torch.cuda.is_available(),
-            )
+            validation_loader = make_data_loader(validation_dataset, shuffle=False)
             validation_loss, validation_accuracy = evaluate(model, validation_loader, criterion)
             print(f"Validation: loss {validation_loss:.4f}, acc {validation_accuracy:.3f}")
             if writer is not None:
