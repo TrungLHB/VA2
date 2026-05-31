@@ -27,12 +27,12 @@ USE_IMAGENET_INIT = bool(int(os.environ.get("USE_IMAGENET_INIT", "0")))
 
 EPOCHS = int(os.environ.get("EPOCHS", "1"))
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "2"))
-CLIP_LENGTH = int(os.environ.get("CLIP_LENGTH", "16"))
+CLIP_LENGTH = int(os.environ.get("CLIP_LENGTH", "8"))
 NUM_TEST_VIEWS = int(os.environ.get("NUM_TEST_VIEWS", "4"))
 
 NUM_WORKERS = 2
-LEARNING_RATE = 3e-3
-WEIGHT_DECAY = 1e-4
+LEARNING_RATE = 1e-3
+WEIGHT_DECAY = 3e-4
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CHECKPOINT_DIR = Path(PROJECT_ROOT / "3DResNet" / "checkpoints")
