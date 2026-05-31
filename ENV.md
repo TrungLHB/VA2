@@ -132,10 +132,22 @@ MODALITY=rgb USE_IMAGENET_INIT=1 EPOCHS=15 BATCH_SIZE=128 python ./TSN/main.py
 Train TSN with optical flow:
 
 ```bash
-# 
 MODALITY=flow USE_IMAGENET_INIT=0 EPOCHS=1 BATCH_SIZE=64 python ./TSN/main.py
 
 MODALITY=flow USE_IMAGENET_INIT=1 EPOCHS=1 BATCH_SIZE=64 python ./TSN/main.py
+```
+
+Evaluate TSN late fusion after training the RGB ImageNet and flow ImageNet models:
+
+```bash
+MODALITY=fusion BATCH_SIZE=128 python ./TSN/main.py
+```
+
+By default, this loads:
+
+```text
+TSN/checkpoints/rgb_imagenet.pt
+TSN/checkpoints/flow_imagenet.pt
 ```
 
 Train 3D ResNet:

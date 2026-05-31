@@ -17,6 +17,7 @@ from torchvision.transforms.functional import to_tensor
 
 RGB = "rgb"
 FLOW = "flow"
+FUSION = "fusion"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = PROJECT_ROOT / "data"
@@ -396,9 +397,46 @@ class MiniUCFFlowDataset(_MiniUCFTSNDataset):
         return torch.cat([self._to_tensor(flow_x), self._to_tensor(flow_y)], dim=0)
 
 
+class MiniUCFFusionDataset(Dataset):
+    """Return matching RGB and optical-flow TSN inputs for late fusion."""
+
+    def __init__(
+        self,
+        split: str,
+        num_segments: int,
+        flow_stack_size: int,
+    ) -> None:
+        self.rgb_dataset = MiniUCFRGBDataset(split=split, num_segments=num_segments)
+        self.flow_dataset = MiniUCFFlowDataset(
+            split=split,
+            num_segments=num_segments,
+            flow_stack_size=flow_stack_size,
+        )
+        self.idx_to_class = self.rgb_dataset.idx_to_class
+
+        if len(self.rgb_dataset) != len(self.flow_dataset):
+            raise ValueError("RGB and flow datasets must have the same number of samples")
+
+        for rgb_record, flow_record in zip(self.rgb_dataset.records, self.flow_dataset.records):
+            if rgb_record.identifier != flow_record.identifier or rgb_record.label != flow_record.label:
+                raise ValueError("RGB and flow datasets are not aligned")
+
+    def __len__(self) -> int:
+        return len(self.rgb_dataset)
+
+    def __getitem__(self, index: int) -> Tuple[Tuple[torch.Tensor, torch.Tensor], int]:
+        rgb_clip, rgb_label = self.rgb_dataset[index]
+        flow_clip, flow_label = self.flow_dataset[index]
+        if rgb_label != flow_label:
+            raise ValueError("RGB and flow labels do not match")
+        return (rgb_clip, flow_clip), rgb_label
+
+
 __all__ = [
     "FLOW",
+    "FUSION",
     "RGB",
+    "MiniUCFFusionDataset",
     "MiniUCFFlowDataset",
     "MiniUCFRGBDataset",
     "flow_transforms",

@@ -89,6 +89,21 @@ class TSN(nn.Module):
         self.backbone.conv1 = new_conv
 
 
+class LateFusionTSN(nn.Module):
+    """Late-fuse RGB and optical-flow TSN predictions at test time."""
+
+    def __init__(self, rgb_model: TSN, flow_model: TSN) -> None:
+        super().__init__()
+        self.rgb_model = rgb_model
+        self.flow_model = flow_model
+
+    def forward(self, rgb_clip: torch.Tensor, flow_clip: torch.Tensor) -> torch.Tensor:
+        rgb_probabilities = torch.softmax(self.rgb_model(rgb_clip), dim=1)
+        flow_probabilities = torch.softmax(self.flow_model(flow_clip), dim=1)
+        probabilities = 0.5 * (rgb_probabilities + flow_probabilities)
+        return torch.log(probabilities.clamp_min(1e-8))
+
+
 def rgb_tsn(pretrained: bool = True) -> TSN:
     return TSN(input_channels=3, pretrained=pretrained)
 
@@ -100,6 +115,7 @@ def flow_tsn(pretrained: bool = True) -> TSN:
 __all__ = [
     "FLOW_CHANNELS",
     "FLOW_STACK_SIZE",
+    "LateFusionTSN",
     "NUM_CLASSES",
     "NUM_SEGMENTS",
     "TSN",

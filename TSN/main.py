@@ -19,23 +19,25 @@ if str(TASK_ROOT) not in sys.path:
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from dataset import FLOW, RGB, MiniUCFFlowDataset, MiniUCFRGBDataset
-from TSN.model import FLOW_STACK_SIZE, NUM_SEGMENTS, flow_tsn, rgb_tsn
+from dataset import FLOW, FUSION, RGB, MiniUCFFlowDataset, MiniUCFRGBDataset, MiniUCFFusionDataset
+from TSN.model import FLOW_STACK_SIZE, LateFusionTSN, NUM_SEGMENTS, flow_tsn, rgb_tsn
 
 
-MODALITY = os.environ.get("MODALITY", RGB)  # RGB or FLOW
+MODALITY = os.environ.get("MODALITY", RGB)  # RGB, FLOW, or FUSION
 USE_IMAGENET_INIT = bool(int(os.environ.get("USE_IMAGENET_INIT", "0")))
 
 EPOCHS = int(os.environ.get("EPOCHS", "1"))
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "2"))
 
-NUM_WORKERS = 2
+NUM_WORKERS = int(os.environ.get("NUM_WORKERS", "2"))
 LEARNING_RATE = 3e-3
 WEIGHT_DECAY = 1e-4
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CHECKPOINT_DIR = Path(PROJECT_ROOT / "TSN" / "checkpoints")
 TENSORBOARD_DIR = Path(PROJECT_ROOT / "TSN" / "runs")
+RGB_FUSION_CHECKPOINT = Path(os.environ.get("RGB_CHECKPOINT", CHECKPOINT_DIR / "rgb_imagenet.pt"))
+FLOW_FUSION_CHECKPOINT = Path(os.environ.get("FLOW_CHECKPOINT", CHECKPOINT_DIR / "flow_imagenet.pt"))
 
 
 def build_dataset(split: str):
@@ -47,6 +49,13 @@ def build_dataset(split: str):
 
     if MODALITY == FLOW:
         return MiniUCFFlowDataset(
+            split=split,
+            num_segments=NUM_SEGMENTS,
+            flow_stack_size=FLOW_STACK_SIZE,
+        )
+
+    if MODALITY == FUSION:
+        return MiniUCFFusionDataset(
             split=split,
             num_segments=NUM_SEGMENTS,
             flow_stack_size=FLOW_STACK_SIZE,
@@ -68,7 +77,17 @@ def build_model() -> nn.Module:
         return rgb_tsn(pretrained=USE_IMAGENET_INIT)
     if MODALITY == FLOW:
         return flow_tsn(pretrained=USE_IMAGENET_INIT)
+    if MODALITY == FUSION:
+        return build_fusion_model()
     raise ValueError(f"Unknown MODALITY: {MODALITY}")
+
+
+def build_fusion_model() -> LateFusionTSN:
+    rgb_model = rgb_tsn(pretrained=False).to(DEVICE)
+    flow_model = flow_tsn(pretrained=False).to(DEVICE)
+    load_checkpoint_from_path(rgb_model, RGB_FUSION_CHECKPOINT)
+    load_checkpoint_from_path(flow_model, FLOW_FUSION_CHECKPOINT)
+    return LateFusionTSN(rgb_model, flow_model).to(DEVICE)
 
 
 def make_data_loader(dataset, shuffle: bool) -> DataLoader:
@@ -117,14 +136,17 @@ def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module) -> Tupl
     total_samples = 0
 
     for batch_index, (clips, labels) in enumerate(loader):
-        clips = clips.to(DEVICE)
+        if isinstance(clips, (tuple, list)):
+            clips = tuple(clip.to(DEVICE) for clip in clips)
+        else:
+            clips = clips.to(DEVICE)
         labels = labels.to(DEVICE)
 
-        logits = model(clips)
-        loss = criterion(logits, labels)
+        outputs = model(*clips) if isinstance(clips, tuple) else model(clips)
+        loss = criterion(outputs, labels)
 
         total_loss += loss.item() * labels.size(0)
-        total_correct += (logits.argmax(dim=1) == labels).sum().item()
+        total_correct += (outputs.argmax(dim=1) == labels).sum().item()
         total_samples += labels.size(0)
 
     return total_loss / total_samples, total_correct / total_samples
@@ -199,7 +221,26 @@ def load_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer | None = 
     return epoch
 
 
+def load_checkpoint_from_path(model: nn.Module, path: Path) -> int:
+    if not path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {path}")
+
+    checkpoint = torch.load(path, map_location=DEVICE)
+    model.load_state_dict(checkpoint["model_state"])
+    epoch = int(checkpoint.get("epoch", 0))
+    print(f"Loaded checkpoint from epoch {epoch}: {path}")
+    return epoch
+
+
 def main() -> None:
+    if MODALITY == FUSION:
+        fusion_model = build_fusion_model()
+        validation_dataset = build_validation_dataset()
+        validation_loader = make_data_loader(validation_dataset, shuffle=False)
+        fusion_loss, fusion_accuracy = evaluate(fusion_model, validation_loader, nn.NLLLoss())
+        print(f"Late fusion validation: loss {fusion_loss:.4f}, acc {fusion_accuracy:.3f}")
+        return
+
     model = build_model().to(DEVICE)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9, weight_decay=WEIGHT_DECAY)
