@@ -1,9 +1,4 @@
-"""Train RGB or optical-flow TSN on miniUCF.
-
-This file intentionally uses constants instead of many command-line arguments.
-For this part of the exercise, choose the experiment by changing the constants
-near the top of the file.
-"""
+"""Train RGB or optical-flow TSN on miniUCF."""
 
 from __future__ import annotations
 
@@ -16,13 +11,15 @@ from typing import Tuple
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-from torchvision import transforms
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TASK_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = TASK_ROOT.parents[0]
+if str(TASK_ROOT) not in sys.path:
+    sys.path.insert(0, str(TASK_ROOT))
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from miniUCF import FLOW, RGB, MiniUCFFlowDataset, MiniUCFRGBDataset
+from dataset import FLOW, RGB, MiniUCFFlowDataset, MiniUCFRGBDataset
 from TSN.model import FLOW_STACK_SIZE, NUM_SEGMENTS, flow_tsn, rgb_tsn
 
 
@@ -41,61 +38,17 @@ CHECKPOINT_DIR = Path(PROJECT_ROOT / "TSN" / "checkpoints")
 TENSORBOARD_DIR = Path(PROJECT_ROOT / "TSN" / "runs")
 
 
-def rgb_train_transforms() -> transforms.Compose:
-    # Resize the shorter image side to 256, then crop 224x224 because ResNet-18
-    # ImageNet models are trained on 224x224 inputs. The mean/std values are the
-    # standard ImageNet RGB normalization statistics.
-    return transforms.Compose(
-        [
-            transforms.Resize(256),
-            transforms.RandomResizedCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
-    )
-
-
-def rgb_eval_transforms() -> transforms.Compose:
-    # Use the same 256 resize and 224x224 crop size as training, but center-crop
-    # so validation/testing is deterministic.
-    return transforms.Compose(
-        [
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
-    )
-
-
-def flow_transforms() -> transforms.Compose:
-    # Flow JPEGs are loaded as single-channel images. Pixel values become [0, 1],
-    # so mean=0.5 centers them near zero and std=0.226 gives a scale close to
-    # ImageNet preprocessing while applying the same normalization to all flow channels.
-    return transforms.Compose(
-        [
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5], std=[0.226]),
-        ]
-    )
-
-
 def build_dataset(split: str):
     if MODALITY == RGB:
         return MiniUCFRGBDataset(
             split=split,
             num_segments=NUM_SEGMENTS,
-            transform=rgb_train_transforms() if split == "train" else rgb_eval_transforms(),
         )
 
     if MODALITY == FLOW:
         return MiniUCFFlowDataset(
             split=split,
             num_segments=NUM_SEGMENTS,
-            transform=flow_transforms(),
             flow_stack_size=FLOW_STACK_SIZE,
         )
 

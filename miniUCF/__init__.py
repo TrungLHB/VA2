@@ -11,12 +11,11 @@ from .dataset import (
     TRAIN_SPLIT_FILE,
     VALIDATION_SPLIT_FILE,
     VIDEO_ROOT,
-    MiniUCFFlowDataset,
-    MiniUCFRGBDataset,
     VideoRecord,
     extract_rgb_frames,
     read_class_mapping,
     read_split_file,
+    split_file_for,
 )
 
 __all__ = [
@@ -32,10 +31,9 @@ __all__ = [
     "TRAIN_SPLIT_FILE",
     "VALIDATION_SPLIT_FILE",
     "VIDEO_ROOT",
-    "MiniUCFFlowDataset",
-    "MiniUCFRGBDataset",
     "VideoRecord",
     "extract_rgb_frames",
     "read_class_mapping",
     "read_split_file",
+    "split_file_for",
 ]

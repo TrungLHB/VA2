@@ -1,11 +1,4 @@
-"""3D ResNet-18 for RGB action recognition on miniUCF.
-
-The architecture mirrors the 2D ResNet-18 layout, but every convolution is a
-3D convolution.  When ``pretrained=True``, ImageNet ResNet-18 weights are
-inflated by copying each 2D filter along the temporal dimension and dividing by
-the temporal kernel size, following the I3D initialization idea from Carreira
-and Zisserman (2017).
-"""
+"""3D ResNet-18 for RGB action recognition on miniUCF."""
 
 from __future__ import annotations
 
