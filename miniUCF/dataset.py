@@ -142,7 +142,6 @@ class _MiniUCFBase(Dataset):
         split: str,
         num_segments: int,
         transform: Optional[Callable],
-        sampling_seed: int = 0,
     ) -> None:
         if num_segments <= 0:
             raise ValueError("num_segments must be positive")
@@ -150,7 +149,6 @@ class _MiniUCFBase(Dataset):
         self.split = split
         self.num_segments = num_segments
         self.transform = transform
-        self.sampling_seed = sampling_seed
         self.random_sampling = split == "train"
         self.class_to_idx, self.idx_to_class = read_class_mapping()
         self.records = read_split_file(split_file_for(split), self.class_to_idx)
@@ -161,9 +159,9 @@ class _MiniUCFBase(Dataset):
     def _manifest_path(self, modality: str, extra_name: str = "") -> Path:
         """Return the path where fixed TSN frame/flow samples are stored."""
 
-        seed_name = f"seed{self.sampling_seed}" if self.random_sampling else "middle"
+        sample_name = "random" if self.random_sampling else "middle"
         extra = f"_{extra_name}" if extra_name else ""
-        filename = f"{modality}_{self.split}_segments{self.num_segments}_{seed_name}{extra}.json"
+        filename = f"{modality}_{self.split}_segments{self.num_segments}_{sample_name}{extra}.json"
         return TSN_SAMPLE_ROOT / filename
 
     def _load_manifest(self, path: Path) -> Optional[Dict[str, List[int]]]:
@@ -205,9 +203,6 @@ class _MiniUCFBase(Dataset):
 
         return indices
 
-    def _rng_for_record(self, index: int) -> random.Random:
-        return random.Random(self.sampling_seed + index)
-
     def _fixed_samples_from_manifest(
         self,
         modality: str,
@@ -220,8 +215,8 @@ class _MiniUCFBase(Dataset):
             return manifest
 
         manifest = {
-            record.identifier: self._sample_indices(counts[record.identifier], self._rng_for_record(index))
-            for index, record in enumerate(self.records)
+            record.identifier: self._sample_indices(counts[record.identifier])
+            for record in self.records
         }
         self._save_manifest(path, manifest)
         print(f"Saved fixed TSN samples: {path}")
@@ -244,9 +239,8 @@ class MiniUCFRGBDataset(_MiniUCFBase):
         num_segments: int,
         transform: Optional[Callable],
         extract_missing: bool = True,
-        sampling_seed: int = 0,
     ) -> None:
-        super().__init__(split=split, num_segments=num_segments, transform=transform, sampling_seed=sampling_seed)
+        super().__init__(split=split, num_segments=num_segments, transform=transform)
 
         if extract_missing:
             self._extract_missing_frames()
@@ -304,12 +298,11 @@ class MiniUCFFlowDataset(_MiniUCFBase):
         num_segments: int,
         transform: Optional[Callable],
         flow_stack_size: int,
-        sampling_seed: int = 0,
     ) -> None:
         if flow_stack_size <= 0:
             raise ValueError("flow_stack_size must be positive")
 
-        super().__init__(split=split, num_segments=num_segments, transform=transform, sampling_seed=sampling_seed)
+        super().__init__(split=split, num_segments=num_segments, transform=transform)
         self.flow_stack_size = flow_stack_size
         stack_counts = {record.identifier: self._stack_count(record) for record in self.records}
         extra_name = f"stack{self.flow_stack_size}"
