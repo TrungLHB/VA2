@@ -140,7 +140,7 @@ MODALITY=flow USE_IMAGENET_INIT=1 EPOCHS=1 BATCH_SIZE=64 python ./TSN/main.py
 Evaluate TSN late fusion after training the RGB ImageNet and flow ImageNet models:
 
 ```bash
-MODALITY=fusion BATCH_SIZE=128 python ./TSN/main.py
+MODALITY=fusion BATCH_SIZE=32 python ./TSN/main.py
 ```
 
 By default, this loads:
